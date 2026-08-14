@@ -1,0 +1,13 @@
+FROM golang:1.24.0 AS builder
+
+WORKDIR /app
+
+COPY . . 
+
+RUN go build -o /app/miniflux .
+
+FROM debian:12.6-slim 
+
+COPY --from=builder /app/miniflux /usr/local/bin/miniflux
+
+CMD ["/miniflux"]
