@@ -1,6 +1,6 @@
 services:
   miniflux:
-    image: miniflux:v3
+    image: 396608811172.dkr.ecr.eu-west-3.amazonaws.com/app-miniflix:2.2.12
     container_name: miniflux
     restart: unless-stopped
     ports:
