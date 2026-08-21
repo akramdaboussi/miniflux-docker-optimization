@@ -30,7 +30,7 @@ jobs:
         run: echo "IMAGE=${{ steps.ecr.outputs.registry }}/app-miniflix:${{ github.sha }}" >> $GITHUB_ENV
 
       - name: Construire l'image
-        run: docker build -f docker/Dockerfile.v3_scratch -t $IMAGE upstream/
+        run: docker build -f docker/Dockerfile.v3_minimal -t $IMAGE upstream/
 
       - name: Vérifier que le binaire s'exécute
         run: docker run --rm $IMAGE miniflux -version
