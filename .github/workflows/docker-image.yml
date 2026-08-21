@@ -1,0 +1,39 @@
+name: Docker Image CI
+
+on: push
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Récupérer mon dépôt
+        uses: actions/checkout@v4
+
+      - name: Récupérer la source Miniflux
+        run: git clone --depth 1 --branch 2.2.12 https://github.com/miniflux/v2.git upstream
+
+      - name: Authentification AWS
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::396608811172:role/gha-miniflux
+          aws-region: eu-west-3
+
+      - name: Connexion à ECR
+        id: ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Définir le nom de l'image
+        run: echo "IMAGE=${{ steps.ecr.outputs.registry }}/app-miniflix:${{ github.sha }}" >> $GITHUB_ENV
+
+      - name: Construire l'image
+        run: docker build -f docker/Dockerfile.v3_scratch -t $IMAGE upstream/
+
+      - name: Vérifier que le binaire s'exécute
+        run: docker run --rm $IMAGE miniflux -version
+
+      - name: Publier dans ECR
+        run: docker push $IMAGE
