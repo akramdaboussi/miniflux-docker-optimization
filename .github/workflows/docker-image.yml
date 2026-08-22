@@ -34,6 +34,14 @@ jobs:
 
       - name: Vérifier que le binaire s'exécute
         run: docker run --rm $IMAGE miniflux -version
+      
+      - name: Scanner l'image
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: ${{ env.IMAGE }}
+          severity: CRITICAL,HIGH
+          exit-code: '1'
+          ignore-unfixed: true
 
       - name: Publier dans ECR
         run: docker push $IMAGE
