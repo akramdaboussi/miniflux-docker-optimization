@@ -1,76 +1,128 @@
-# Miniflux : de l'image au déploiement
+# Miniflux: from image to deployment
 
-Conteneurisation et optimisation de l'image Docker de [Miniflux](https://github.com/miniflux/v2)
-(lecteur RSS en Go), publication automatisée via GitHub Actions, déploiement sur AWS.
+Containerizing and optimizing the Docker image for [Miniflux](https://github.com/miniflux/v2)
+(a feed reader written in Go), with automated publishing through GitHub Actions
+and deployment to AWS.
 
-Le code applicatif n'est pas modifié : le projet porte uniquement sur la chaîne
-de build, de publication et de déploiement.
+The application code is untouched. This project covers the build, publish and
+deployment chain only.
 
-## Contexte
+## Context
 
-- Application : Miniflux v2, tag `2.2.12` (commit `459b1bf`)
-- Toolchain : Go 1.24.0, lu depuis `go.mod`
-- La source amont n'est pas versionnée dans ce dépôt (voir *Reproduire* ci-dessous)
+- Application: Miniflux v2, tag `2.3.3`
+- Toolchain: Go 1.26
+- Upstream source is not vendored in this repository (see *Reproduce* below)
 
-## Mesures
+## Image size
 
-| Version | Image de base | Taille | Durée de build |
-|---------|---------------|--------|----------------|
-| v1 : naïve | `golang:1.24.0` | 1,85 Go | 59 s |
-| v2 : multi-stage | `debian:12.6-slim` | 158 Mo | 23 s | -91,5 % |
-| v3 — minimale | `scratch` | 43,7 Mo | 19 s | −97,6 % |
+| Version | Base image | Size | Reduction | Build time |
+|---------|------------|------|-----------|------------|
+| v1 naive | `golang:1.26` | 1.85 GB | — | 59 s |
+| v2 multi-stage | `debian:12.6-slim` | 158 MB | −91.5 % | 23 s |
+| v3 minimal | `scratch` | 43.7 MB | −97.6 % | 19 s |
 
-Durées mesurées avec `--no-cache`. La v1 inclut le téléchargement initial de
-l'image de base ; les durées ne sont donc pas strictement comparables entre elles.
+Build times measured with `--no-cache`. The v1 figure includes pulling the base
+image, so the three are not strictly comparable.
 
-Binaire compilé seul : 28 Mo.
+Compiled binary alone: 28 MB.
 
-## Choix techniques
+## Vulnerabilities
 
-### Pourquoi un build multi-stage
+Because the v3 image starts from `scratch`, it ships no OS packages: the scanner
+has a single target, the binary. A Debian base would add a second one covering
+every package in the distribution.
 
-L'image v1 embarque tout l'outillage de compilation : toolchain Go, cache de
-build, modules téléchargés, code source alors que seul le binaire est nécessaire
-à l'exécution.
+| Application version | Toolchain | HIGH + CRITICAL CVEs |
+|---------------------|-----------|----------------------|
+| Miniflux 2.2.12 | Go 1.24.0 | 41 (1 CRITICAL) |
+| Miniflux 2.3.3 | Go 1.26 | 0 |
 
-Supprimer ces fichiers dans une instruction ultérieure ne réduirait rien : les
-couches d'une image sont immuables, un fichier effacé reste présent dans la couche
-qui le contient. Le multi-stage contourne le problème en repartant d'une base
-vierge et en n'y copiant que le binaire.
+All 41 came from outdated dependencies. The Go standard library compiled into
+the binary and the `golang.org/x/*` modules pinned in the upstream `go.mod`.
+No suppression was needed, upgrading resolved every one of them.
 
-Un binaire Go compilé avec les réglages par défaut ne peut pas y tourner : CGO
-étant actif, le binaire est lié dynamiquement à la bibliothèque C du système
-(le paquet `net` appelle `getaddrinfo()` pour la résolution DNS). Le chargeur
-dynamique étant absent de `scratch`, le lancement échoue sur un message
-trompeur — `no such file or directory` désigne le chargeur, pas le binaire.
+## Continuous integration
 
-`CGO_ENABLED=0` force une implémentation Go pure de ces paquets et produit un
-binaire statique, sans aucune dépendance externe.
+The pipeline (`.github/workflows/docker-image.yml`) runs on every push: fetch the upstream
+source, build the image, check that the binary runs, scan for vulnerabilities,
+publish to ECR.
 
-### Certificats racine
+Images are tagged with the commit SHA, never with a mutable tag. Any deployed
+version stays traceable and can be rolled back.
 
-`scratch` ne contient pas les certificats des autorités de certification.
-Miniflux ne pourrait valider aucune connexion HTTPS vers les flux RSS. Ils sont
-copiés depuis l'étage builder, dont l'image de base les fournit.
+The scan runs before publishing and fails the pipeline on any fixable HIGH or
+CRITICAL finding, so a vulnerable image never reaches the registry.
 
-### Cache de couches
+### Authentication without stored credentials
 
-Les dépendances (`go.mod`, `go.sum`) sont copiées et téléchargées avant le code
-source. Une modification du code n'invalide donc que la couche de compilation,
-pas celle des dépendances, du plus stable au plus volatil.
+The pipeline holds no AWS access keys. GitHub issues a signed identity token on
+each run; AWS validates it through an OIDC provider and returns temporary
+credentials valid for one hour.
 
-### Adresse d'écoute
+The assumed role's trust policy restricts it to the
+`akramdaboussi/miniflux-docker-optimization` repository and its permissions
+allow pushing to one specific ECR repository and nothing else.
 
-Par défaut Miniflux écoute sur `127.0.0.1`, c'est-à-dire uniquement depuis
-l'intérieur de son propre conteneur : la publication de port reste sans effet et
-l'application est injoignable. `LISTEN_ADDR=0.0.0.0:8080` ouvre l'écoute à
-toutes les interfaces.
+An access key stored in repository secrets would be valid indefinitely and, if
+leaked, would grant lasting access to the AWS account.
 
+## Design decisions
 
-## Reproduire
+### Why multi-stage
+
+The v1 image ships the entire build toolchain: the Go compiler, its build cache,
+downloaded modules and the source tree when only the binary is needed at
+runtime.
+
+Deleting those files in a later instruction saves nothing. Image layers are
+immutable: a deleted file still occupies the layer that contains it. Multi-stage
+sidesteps this by starting from a clean base and copying in only the binary.
+
+A Go binary built with default settings will not run there. CGO is enabled by
+default, so the binary links dynamically against the system C library (the `net`
+package calls `getaddrinfo()` for DNS resolution). `scratch` has no dynamic
+loader, and the failure message is misleading, `no such file or directory`
+refers to the loader, not to the binary.
+
+`CGO_ENABLED=0` selects pure Go implementations of those packages and produces a
+static binary with no external dependencies.
+
+### Root certificates
+
+`scratch` ships no CA certificates, so Miniflux could not validate any HTTPS
+connection to a feed. They are copied from the builder stage, whose base image
+provides them.
+
+### Layer caching
+
+`go.mod` and `go.sum` are copied and resolved before the source tree. A code
+change then invalidates only the compile layer, not the dependency layer
+ordering from the most stable to the most volatile.
+
+### Listen address
+
+Miniflux listens on `127.0.0.1` by default, reachable only from inside its own
+container: publishing a port has no effect and the application is unreachable.
+`LISTEN_ADDR=0.0.0.0:8080` opens it on all interfaces.
+
+## Running the stack
+
+`docker-compose.yaml` runs Miniflux alongside its PostgreSQL database. It builds
+nothing: it pulls the image published by the pipeline.
+
+The ECR repository is private, so this only works with credentials for the AWS
+account that hosts it. It documents how the stack is wired, not an open
+procedure.
+
+Copy `.env.example` to `.env`, then set `MINIFLUX_IMAGE` to the build you want to
+run. Images are tagged with the commit SHA, so there is no "current" tag — pick
+one from the ECR repository.
 
 ```bash
-git clone --depth 1 --branch 2.2.12 https://github.com/miniflux/v2.git upstream
-docker build --no-cache -f docker/Dockerfile.v2_multistage -t miniflux:v2 upstream/
-docker run --rm miniflux:v2 miniflux -version
+aws ecr get-login-password --region eu-west-3 \
+  | docker login --username AWS --password-stdin 396608811172.dkr.ecr.eu-west-3.amazonaws.com
+
+docker compose up -d
 ```
+
+Miniflux is then available on http://localhost:8080.
