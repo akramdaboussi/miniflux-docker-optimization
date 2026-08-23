@@ -68,6 +68,7 @@ jobs:
             --instance-ids i-0772ebbab8091228b \
             --document-name AWS-RunShellScript \
             --parameters 'commands=[
+              "curl -fsSL -o /opt/miniflux/docker-compose.yaml https://raw.githubusercontent.com/akramdaboussi/miniflux-docker-optimization/${{ github.sha }}/docker-compose.yaml",
               "cd /opt/miniflux",
               "sed -i \"s|^MINIFLUX_IMAGE=.*|MINIFLUX_IMAGE=${{ needs.build-and-push.outputs.image }}|\" .env",
               "aws ecr get-login-password --region eu-west-3 | docker login --username AWS --password-stdin 396608811172.dkr.ecr.eu-west-3.amazonaws.com",
