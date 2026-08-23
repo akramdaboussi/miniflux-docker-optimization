@@ -13,6 +13,29 @@ deployment chain only.
 - Toolchain: Go 1.26
 - Upstream source is not vendored in this repository (see *Reproduce* below)
 
+## Running the stack
+
+`docker-compose.yaml` runs Miniflux alongside its PostgreSQL database. It builds
+nothing: it pulls the image published by the pipeline.
+
+The ECR repository is private, so this only works with credentials for the AWS
+account that hosts it. It documents how the stack is wired, not an open
+procedure.
+
+Copy `.env.example` to `.env`, then set `MINIFLUX_IMAGE` to the build you want to
+run. Images are tagged with the commit SHA, so there is no "current" tag — pick
+one from the ECR repository.
+
+```bash
+aws ecr get-login-password --region eu-west-3 \
+  | docker login --username AWS --password-stdin 396608811172.dkr.ecr.eu-west-3.amazonaws.com
+
+docker compose up -d
+```
+
+Miniflux listens on port 8080. On the EC2 instance, the same file runs the same
+image — only the `.env` differs.
+
 ## Image size
 
 | Version | Base image | Size | Reduction | Build time |
@@ -66,6 +89,30 @@ allow pushing to one specific ECR repository and nothing else.
 An access key stored in repository secrets would be valid indefinitely and, if
 leaked, would grant lasting access to the AWS account.
 
+## Deployment
+
+The pipeline deploys to a single EC2 instance running Amazon Linux, where Docker
+Compose runs Miniflux alongside PostgreSQL.
+
+GitHub never connects to the instance. The deploy job sends a command to AWS
+Systems Manager; an agent already running on the instance polls for it and
+executes it. All traffic is outbound, from the instance to AWS.
+
+The instance therefore needs no inbound port beyond the application itself: port
+8080 is the only rule in its security group, and SSH is closed. There is no
+private key to distribute, rotate or leak and shell access, when needed goes
+through Session Manager over the same outbound channel.
+
+Two identities are involved, each scoped to one task:
+
+- the pipeline assumes a role allowed to send one command document to one
+  instance, and nothing else
+- the instance carries a role allowing read-only pulls from ECR
+
+The deploy step rewrites the image tag in the instance's `.env`, logs in to ECR
+and restarts the stack. Compose only recreates the container whose image
+changed, so the database keeps running.
+
 ## Design decisions
 
 ### Why multi-stage
@@ -105,24 +152,14 @@ Miniflux listens on `127.0.0.1` by default, reachable only from inside its own
 container: publishing a port has no effect and the application is unreachable.
 `LISTEN_ADDR=0.0.0.0:8080` opens it on all interfaces.
 
-## Running the stack
+## Known limitations
 
-`docker-compose.yaml` runs Miniflux alongside its PostgreSQL database. It builds
-nothing: it pulls the image published by the pipeline.
+The instance is created and configured by hand. A destroyed instance would have
+to be rebuilt the same way — the next project covers this with Terraform.
 
-The ECR repository is private, so this only works with credentials for the AWS
-account that hosts it. It documents how the stack is wired, not an open
-procedure.
+Secrets live in a plaintext `.env` on the instance. Reading them from Parameter
+Store at deploy time would remove the last stored credential in the chain.
 
-Copy `.env.example` to `.env`, then set `MINIFLUX_IMAGE` to the build you want to
-run. Images are tagged with the commit SHA, so there is no "current" tag — pick
-one from the ECR repository.
-
-```bash
-aws ecr get-login-password --region eu-west-3 \
-  | docker login --username AWS --password-stdin 396608811172.dkr.ecr.eu-west-3.amazonaws.com
-
-docker compose up -d
-```
-
-Miniflux is then available on http://localhost:8080.
+The deploy job reports success once the command has run, not once the
+application answers. A request against the running instance would close that
+gap.
