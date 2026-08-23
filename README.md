@@ -23,7 +23,7 @@ account that hosts it. It documents how the stack is wired, not an open
 procedure.
 
 Copy `.env.example` to `.env`, then set `MINIFLUX_IMAGE` to the build you want to
-run. Images are tagged with the commit SHA, so there is no "current" tag — pick
+run. Images are tagged with the commit SHA, so there is no "current" tag, pick
 one from the ECR repository.
 
 ```bash
@@ -34,13 +34,13 @@ docker compose up -d
 ```
 
 Miniflux listens on port 8080. On the EC2 instance, the same file runs the same
-image — only the `.env` differs.
+image, only the `.env` differs.
 
 ## Image size
 
 | Version | Base image | Size | Reduction | Build time |
 |---------|------------|------|-----------|------------|
-| v1 naive | `golang:1.26` | 1.85 GB | — | 59 s |
+| v1 naive | `golang:1.26` | 1.85 GB | - | 59 s |
 | v2 multi-stage | `debian:12.6-slim` | 158 MB | −91.5 % | 23 s |
 | v3 minimal | `scratch` | 43.7 MB | −97.6 % | 19 s |
 
@@ -109,9 +109,21 @@ Two identities are involved, each scoped to one task:
   instance, and nothing else
 - the instance carries a role allowing read-only pulls from ECR
 
-The deploy step rewrites the image tag in the instance's `.env`, logs in to ECR
-and restarts the stack. Compose only recreates the container whose image
-changed, so the database keeps running.
+The deploy step fetches `docker-compose.yaml` from the repository at the deployed
+commit, rewrites the image tag in the instance's `.env`, logs in to ECR and
+restarts the stack. Compose only recreates the container whose image changed, so
+the database keeps running.
+
+Fetching the Compose file at the commit SHA rather than from `main` keeps the
+deployment tied to one exact state: the file that runs on the instance is the
+file that was reviewed alongside the image being deployed. The instance holds no
+copy to keep in sync only `.env`, which carries the secrets and never enters
+version control.
+
+Miniflux waits for PostgreSQL to report healthy before starting, rather than
+merely for its container to exist. Without that, the application starts against a
+database that is not yet accepting connections, crashes, and is restarted until
+it happens to succeed.
 
 ## Design decisions
 
@@ -155,7 +167,7 @@ container: publishing a port has no effect and the application is unreachable.
 ## Known limitations
 
 The instance is created and configured by hand. A destroyed instance would have
-to be rebuilt the same way — the next project covers this with Terraform.
+to be rebuilt the same way.
 
 Secrets live in a plaintext `.env` on the instance. Reading them from Parameter
 Store at deploy time would remove the last stored credential in the chain.
