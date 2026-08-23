@@ -13,7 +13,7 @@ services:
       - ADMIN_USERNAME=${ADMIN_USERNAME}
       - ADMIN_PASSWORD=${ADMIN_PASSWORD}
     depends_on:
-      - db:
+      db:
         condition: service_healthy
 
   db:
